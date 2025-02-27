@@ -1,0 +1,1308 @@
+---
+title: "Rogers-stat543-gradproject"
+author: "Heidi Rogers"
+date: "2024-10-14"
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(dplyr)
+library(mice)
+```
+
+Your primary task is to predict whether internet users will make a purchase online based on tracking data. Your analysis should focus on predictive power but interesting factors leading to purchases should be noted.
+
+```{r, message=FALSE,}
+# read in data
+online_shoppers <- read.csv("online_shoppers_intention.csv")
+dim(online_shoppers)
+
+# look for missing values - none
+md.pattern(online_shoppers, rotate.names = TRUE) 
+head(online_shoppers)
+
+sum(online_shoppers$Revenue)
+unique(online_shoppers$OperatingSystems)
+unique(online_shoppers$Browser)
+```
+
+## Data Cleaning
+
+```{r}
+# appropriately assign factor types and remove rows that recorded none of the pages
+online_shoppers <- online_shoppers %>%
+  mutate(Month = factor(Month), 
+         OperatingSystems = factor(OperatingSystems), 
+         Browser = factor(Browser), 
+         Region = factor(Region), 
+         TrafficType = factor(TrafficType),
+         VisitorType = factor(VisitorType)) %>%
+  filter(!(Administrative == 0 & Informational == 0 & ProductRelated == 0)) # no visits?
+```
+
+```{r}
+# define factor and numeric variables
+factors <- c("Weekend", "Revenue", "VisitorType", "Month", "SpecialDay",
+              "OperatingSystems", "Browser", "Region", "TrafficType")
+
+cat_df <- online_shoppers %>%
+    dplyr::select(all_of(factors))
+
+numeric_df <- online_shoppers %>%
+  dplyr::select(-all_of(factors))
+```
+
+```{r}
+# make correlation matrix of all numeric variables
+cor_matrix <- cor(numeric_df)
+ggcorrplot::ggcorrplot(cor_matrix,
+           lab = TRUE, 
+           lab_size = 2.5, 
+           colors = c("red", "white", "blue"))
+
+# exit rates & bounce rates 
+```
+
+```{r}
+# variable relationships with the response variable
+
+# boxplots for numerical varaibles and revenue
+for(i in 1:length(numeric_df)){
+  col <- colnames(numeric_df)[i]
+  g <- ggplot(online_shoppers, aes_string(x = col, y = "Revenue")) + 
+    geom_boxplot(fill = 'lightskyblue') + 
+    labs(x = col, y = "Revenue") + 
+    theme_minimal()
+  print(g)
+}
+
+# filled bar plots for categorical varaibles and revenue
+for(i in 1:length(cat_df)){
+  col <- colnames(cat_df)[i]
+  g <- ggplot(online_shoppers, aes_string(x = col, fill = "factor(Revenue)")) + 
+    geom_bar(position = "fill") +  # Use 'position = "fill"' to show proportions
+    labs(x = col, y = "Proportion of Revenue") + 
+    scale_fill_manual(values = c("lightblue", "darkolivegreen3"), labels = c("No", "Yes")) +
+    theme_minimal()
+
+  print(g)
+}
+
+# region
+# browser
+# operating system
+# weekend
+```
+
+```{r}
+# distribution of traffic tye
+summary(online_shoppers$TrafficType)
+
+# group traffic types with < 500 observations
+online_shoppers$TrafficType <- as.numeric(online_shoppers$TrafficType)
+online_shoppers$TrafficType[online_shoppers$TrafficType %in% c(5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20)] <- "Other"
+online_shoppers$TrafficType <- as.factor(online_shoppers$TrafficType)
+
+# re plot
+ggplot(online_shoppers, aes(x = TrafficType, fill = factor(Revenue))) + 
+    geom_bar(position = "fill") + 
+    labs(y = "Proportion of Revenue") + 
+    scale_fill_manual(values = c("lightblue", "darkolivegreen3"), labels = c("No", "Yes")) +
+    theme_minimal()
+```
+
+```{r}
+# distirbution of browser types
+summary(online_shoppers$Browser)
+
+# group browser types with < 500 observations
+online_shoppers$Browser <- as.numeric(online_shoppers$Browser)
+online_shoppers$Browser[online_shoppers$Browser %in% c(3, 5, 6, 7, 8, 9, 10, 11, 12, 13)] <- "Other"
+online_shoppers$Browser <- as.factor(online_shoppers$Browser)
+
+ggplot(online_shoppers, aes(x = Browser, fill = factor(Revenue))) + 
+    geom_bar(position = "fill") + 
+    labs(y = "Proportion of Revenue") + 
+    scale_fill_manual(values = c("lightblue", "darkolivegreen3"), labels = c("No", "Yes")) +
+    theme_minimal()
+```
+
+```{r}
+# distribution of operating systems
+summary(online_shoppers$OperatingSystems)
+
+# group operating systems with < 500 observations
+online_shoppers$OperatingSystems <- as.numeric(online_shoppers$OperatingSystems)
+online_shoppers$OperatingSystems[online_shoppers$OperatingSystems %in% c(4, 5, 6, 7, 8)] <- "Other"
+online_shoppers$OperatingSystems <- as.factor(online_shoppers$OperatingSystems)
+
+ggplot(online_shoppers, aes(x = OperatingSystems, fill = factor(Revenue))) + 
+    geom_bar(position = "fill") + 
+    labs(y = "Proportion of Revenue") + 
+    scale_fill_manual(values = c("lightblue", "darkolivegreen3"), labels = c("No", "Yes")) +
+    theme_minimal()
+```
+
+```{r}
+# reshape to long format for faceting
+shoppers_long <- online_shoppers2 %>%
+  pivot_longer(cols = c(MinPerProductPage, MinPerInfoPage, MinPerAdminPage),
+               names_to = "PageType",
+               values_to = "MinutesPerPage")
+
+# facet plot for revenue by minutes per page 
+ggplot(shoppers_long, aes(x = MinutesPerPage, fill = factor(Revenue))) + 
+  geom_density(alpha = 0.5) +
+  xlim(0, 100) +
+  labs(title = "Density Plot: Minutes per Page by Revenue", 
+       x = "Minutes per Page", 
+       y = "Density", 
+       fill = "Purchase Completed") +  # Tidier legend title
+  scale_fill_manual(values = c("blue", "green"), 
+                    labels = c("No", "Yes")) +  # Tidier legend labels
+  facet_wrap(~ PageType, scales = "free", ncol=1) +  # Facet by PageType
+  theme_minimal()
+```
+
+## Feature Engineering
+
+```{r}
+# total pages visited and total duration
+# bounce-exit rate
+# average minutes spent on each type of page 
+# proportion of time spent on each type of page
+
+# if duration is 0 (<1 min spent), then make all the proportions 0
+
+online_shoppers2 <- online_shoppers %>%
+  mutate(Weekend = as.numeric(Weekend),
+         Revenue = as.factor(as.numeric(Revenue))) %>%
+  mutate(TotalPagesVisited = Administrative + Informational + ProductRelated,
+         TotalDuration = Administrative_Duration + Informational_Duration + ProductRelated_Duration) %>%
+  mutate(ExitBounceRate = if_else(ExitRates > 0, 
+                                  BounceRates/ExitRates, 0)) %>%
+  mutate(MinPerPage = if_else(TotalPagesVisited > 0, 
+                                TotalDuration / TotalPagesVisited, 0),
+         MinPerProductPage = if_else(ProductRelated > 0,
+                                        ProductRelated_Duration / ProductRelated, 0),
+         MinPerAdminPage = if_else(Administrative > 0,
+                                     Administrative_Duration / Administrative, 0),
+         MinPerInfoPage = if_else(Informational > 0,
+                                    Informational_Duration / Informational, 0)) %>%
+  mutate(ProductDurationProp = if_else(TotalDuration > 0,
+                                       ProductRelated_Duration / TotalDuration, 0),
+         AdminDurationProp = if_else(TotalDuration > 0,
+                                     Administrative_Duration / TotalDuration, 0),
+         InfoDurationProp = if_else(TotalDuration > 0,
+                                    Informational_Duration / TotalDuration, 0)) %>%
+  mutate(ProductProp = ProductRelated / TotalPagesVisited,
+         AdminProp = Administrative / TotalPagesVisited,
+         InfoProp = Informational / TotalPagesVisited)
+
+```
+
+### Exploratory Plots
+
+```{r}
+# duration and revenue
+ggplot(online_shoppers2, aes(x = TotalDuration, fill = Revenue)) + 
+  geom_density(alpha = 0.5) +
+  xlim(0, 10000) +
+  labs(
+    title = "Minutes Online by Revenue", 
+    x = "Total Minutes Spent Online", 
+    y = "Density", 
+    fill = "Purchase Completed"
+  ) +
+  scale_fill_manual(
+    values = c("blue", "green"), 
+    labels = c("No", "Yes")
+  ) +  
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5), 
+    axis.title = element_text(size = 13),                            
+    axis.text = element_text(size = 12),                            
+    legend.title = element_text(size = 12),                          
+    legend.text = element_text(size = 12),
+    aspect.ratio = 0.6
+  )
+
+```
+
+```{r}
+# duration against revenue
+ggplot(online_shoppers2, aes(x = TotalPagesVisited, fill = Revenue)) + 
+  geom_density(alpha = 0.5) +
+  xlim(0, 100) +
+  labs(title = "Web Pages Visited by Revenue", 
+       x = "Total Number of Pages Visited", 
+       y = "Density", 
+       fill = "Purchase Completed") +
+  scale_fill_manual(values = c("blue", "green"), 
+                    labels = c("No", "Yes")) +  
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 17, hjust = 0.5), 
+    axis.title = element_text(size = 13),                            
+    axis.text = element_text(size = 12),                            
+    legend.title = element_text(size = 12),                          
+    legend.text = element_text(size = 12),
+    aspect.ratio = 0.6
+  )
+
+```
+
+```{r}
+# Boxplot to compare session durations across visitor types
+ggplot(online_shoppers2, aes(x = VisitorType, y = TotalDuration)) +
+  geom_boxplot() +
+  labs(title = "Session Duration Across Visitor Types")
+
+# Histogram for pages viewed
+ggplot(online_shoppers2, aes(x = TotalPagesVisited, fill = VisitorType)) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  labs(title = "Pages Visiged by Visitor Type")
+
+# distribution of visitor types
+summary(online_shoppers2$VisitorType)
+
+# group "other" visitor type in with new visitor since their behavior is more similar
+online_shoppers2$VisitorType[online_shoppers2$VisitorType %in% "Other"] <- "New_Visitor"
+online_shoppers2$VisitorType <- as.factor(online_shoppers2$VisitorType)
+
+# encode into 0s and 1s
+online_shoppers2$NewVisitor <- ifelse(online_shoppers2$VisitorType == "Returning_Visitor", 0, 1)
+
+ggplot(online_shoppers2, aes(x = NewVisitor, fill = factor(Revenue))) + 
+    geom_bar(position = "fill") + 
+    labs(y = "Proportion of Revenue") + 
+    scale_fill_manual(values = c("lightblue", "darkolivegreen3"), labels = c("No", "Yes")) +
+    theme_minimal()
+
+
+
+```
+
+```{r}
+# remove redundant variables
+os <- online_shoppers2 %>%
+  dplyr::select(-Informational, -Informational_Duration, -Administrative,
+                -Administrative_Duration, -ProductRelated, -ProductRelated_Duration,
+                -ExitRates, -BounceRates, -TotalDuration, -TotalPagesVisited,
+                -VisitorType)
+```
+
+```{r}
+# define factor and numeric variables
+factors <- c("Weekend", "Revenue", "Month", "TrafficType", "OperatingSystems",
+             "Browser", "Region")
+
+cat_df <- os %>%
+    dplyr::select(all_of(factors))
+
+numeric_df <- os %>%
+  dplyr::select(-all_of(factors))
+
+```
+
+```{r}
+# make correlation matrix of all numeric variables
+cor_matrix <- cor(numeric_df)
+ggcorrplot::ggcorrplot(cor_matrix,
+           lab = TRUE, 
+           lab_size = 2.5, 
+           colors = c("red", "white", "blue"))
+```
+
+```{r}
+# boxplots for numerical varaibles and revenue
+for(i in 1:length(numeric_df)){
+  col <- colnames(numeric_df)[i]
+  g <- ggplot(os, aes_string(x = col, y = "Revenue")) + 
+    geom_boxplot(fill = 'lightskyblue') + 
+    labs(x = col, y = "Revenue") + 
+    theme_minimal()
+  print(g)
+}
+```
+
+```{r}
+# remove correlated variables
+os <- os %>%
+  dplyr::select(-MinPerPage, -ProductDurationProp, -InfoDurationProp, -AdminDurationProp, -ProductProp)
+
+# re-plot
+numeric_df <- os %>%
+  dplyr::select(-all_of(factors))
+
+cor_matrix <- cor(numeric_df)
+ggcorrplot::ggcorrplot(cor_matrix,
+           lab = TRUE, 
+           lab_size = 2.5, 
+           colors = c("red", "white", "blue"))
+```
+
+## EDA
+
+```{r}
+# distribution of categorical variables
+for(i in 1:length(cat_df)){
+  col <- colnames(cat_df)[i]
+  
+  # plot variables
+  boxplot <- ggplot(data = cat_df, aes(x = factor(.data[[col]]))) +
+    geom_bar(aes(y=..count../sum(..count..)), fill='lightblue') +
+    ylim(0,1) +
+    labs(x = col, y = "Proportion", title = paste("Distribution of", col)) +
+    theme_minimal()
+  
+  print(boxplot)
+}
+```
+
+```{r}
+# revenue by weekend and visitor type
+ggplot(os, aes(x = Weekend, fill = factor(Revenue))) + 
+  geom_bar(position = "fill") +
+  facet_wrap(~NewVisitor) +
+  labs(title = "Revenue Proportion by Weekend and Visitor Type", x = "Weekend", y = "Proportion") +
+  scale_fill_manual(values = c("lightblue", "seagreen3")) +
+  theme_minimal()
+```
+
+More purchases from new visitors
+
+```{r}
+# reshape to long format for faceting
+os_long <- os %>%
+  pivot_longer(cols = c(MinPerProductPage, MinPerInfoPage, MinPerAdminPage),
+               names_to = "PageType",
+               values_to = "MinutesPerPage")
+
+# facet plot for revenue by minutes per page 
+ggplot(os_long, aes(x = MinutesPerPage, fill = factor(Revenue))) + 
+  geom_density(alpha = 0.5) +
+  xlim(0, 100) +
+  labs(title = "Density Plot: Minutes per Page by Revenue", 
+       x = "Minutes per Page", 
+       y = "Density", 
+       fill = "Purchase Completed") +  # Tidier legend title
+  scale_fill_manual(values = c("blue", "green"), 
+                    labels = c("No", "Yes")) +  # Tidier legend labels
+  facet_wrap(~ PageType, scales = "free", ncol=1) +  # Facet by PageType
+  theme_minimal()
+```
+
+```{r}
+# reshape to long format for faceting
+os_long <- os %>%
+  mutate(ProductProp = 1 - (AdminProp + InfoProp)) %>%
+  pivot_longer(cols = c(ProductProp, AdminProp, InfoProp),
+               names_to = "PageType",
+               values_to = "PageProportion")
+
+# facet plot for revenue by minutes per page 
+ggplot(os_long, aes(x =PageProportion, fill = factor(Revenue))) + 
+  geom_density(alpha = 0.5) +
+  labs(title = "Proportion of Pages Visited by Revenue", 
+       x = "Page Proportion", 
+       y = "Density", 
+       fill = "Purchase Completed") +  # Tidier legend title
+  scale_fill_manual(values = c("blue", "green"), 
+                    labels = c("No", "Yes")) +  # Tidier legend labels
+  facet_wrap(~ PageType, scales = "free", ncol=1) +  # Facet by PageType
+  theme_minimal()
+```
+
+```{r}
+# map 0 and 1 to yes and no
+levels(os$Revenue) <- c("No", "Yes")
+
+# Summarize data by month and revenue proportions
+month_data <- os %>%
+  group_by(Month) %>%
+  mutate(Total = n()) %>%
+  group_by(Month, Revenue) %>%
+  summarise(Proportion = n() / first(Total), .groups = "drop")
+
+# Stacked Proportion Bar Chart
+ggplot(month_data, aes(x = Month, y = Proportion, fill = Revenue)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.8, alpha=0.9) +
+  scale_fill_manual(values = c("No" = "orangered3", "Yes" = "dodgerblue")) +
+  labs(
+    title = "Proportion of Revenue Outcomes by Month",
+    x = "Month",
+    y = "Proportion",
+    fill = "Revenue"
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_minimal()
+```
+
+Purchases have more minutes spent per page
+
+```{r}
+library(networkD3)
+
+# summary table
+sankey_data <- os %>%
+  group_by(Weekend = ifelse(Weekend == 1, "True", "False"), 
+           NewVisitor = ifelse(NewVisitor == 1, "True", "False"), 
+           Revenue = ifelse(Revenue == 1, "True", "False")) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  mutate(source = paste("Weekend =", Weekend, "New Visitor =", NewVisitor),
+         target = paste("Revenue =", Revenue))
+
+# data frame for sankey links
+sankey_links <- sankey_data %>%
+  dplyr::select(source, target, Count) %>% # Ensure the column names match
+  mutate(group = ifelse(grepl("Revenue = 1", target), "Revenue 1", "Revenue 0")) %>%
+  rename(value = Count) # Rename Count to value for compatibility
+
+# nodes
+nodes <- data.frame(name = unique(c(sankey_links$source, sankey_links$target)))
+
+# map sources and targets
+sankey_links <- sankey_links %>%
+  mutate(
+    source = match(source, nodes$name) - 1,
+    target = match(target, nodes$name) - 1
+  )
+
+# sankey diagram
+sankey_diagram <- sankeyNetwork(
+  Links = sankey_links,
+  Nodes = nodes,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "name",
+  LinkGroup = "group", # Use the group column for colors
+  colourScale = JS('d3.scaleOrdinal()
+                      .domain(["Revenue 0", "Revenue 1"])
+                      .range(["rgba(0, 0, 255, 0.5)", "rgba(0, 128, 0, 0.5)"])') 
+)
+
+sankey_diagram
+```
+
+Most of the purchases are being made by returning visitors not on the weekend
+
+```{r}
+# one-hot encoding
+library(fastDummies)
+
+# dummy variables for all month and traffic type
+encoded_df <- fastDummies::dummy_cols(os, 
+                                      select_columns = c("Month", "OperatingSystems", "Browser",
+                                                         "Region", "TrafficType"), 
+                                      remove_first_dummy = TRUE)
+
+# Remove original categorical columns
+encoded_df <- encoded_df %>%
+  dplyr::select(-Month, -OperatingSystems, -Browser, -Region, -TrafficType)
+
+head(encoded_df)
+```
+
+## Variable Selection
+
+### Lasso Regression
+
+```{r}
+library(glmnet)
+set.seed(8)
+
+# change back to numeric
+encoded_df$Revenue <- ifelse(encoded_df$Revenue== 0, 0, 1)
+
+train_ind <- sample(1:nrow(encoded_df), floor(.8*nrow(encoded_df)), replace=F) # 80-20 split
+train <- encoded_df[train_ind,]
+test <- encoded_df[-train_ind,]
+
+# lasso
+xx = model.matrix(Revenue ~ ., data = train)
+yy = train$Revenue
+xx_test = model.matrix(Revenue ~ ., data = test)
+
+cv_model = cv.glmnet(xx, yy, family = "binomial", alpha = 1, type.measure = "class", nfolds = 5) # 5 folds of cv
+best_lambda = cv_model$lambda.min
+best_model = glmnet(xx, yy, alpha = 1, lambda = best_lambda)
+
+coefs = coef(best_model)
+
+# non-zero coefficients, exlude intercept
+non_zero_vars = rownames(coefs)[coefs[, 1] != 0]
+
+# remove the intercept from the non-zero variables
+non_zero_vars = non_zero_vars[non_zero_vars != "(Intercept)"]
+
+# filter original df to keep only the variables with non-zero coefficients and add back y
+reduced_df = encoded_df[, c("Revenue", non_zero_vars)]
+
+summary(reduced_df$Revenue)
+```
+
+### Random Forest Feature importance - did not use
+
+```{r}
+library(randomForest)
+
+# split into train and test sets
+set.seed(17)
+train_ind <- sample(1:nrow(encoded_df), floor(0.8 * nrow(encoded_df)), replace = FALSE)
+train <- encoded_df[train_ind, ]
+test <- encoded_df[-train_ind, ]
+
+# convert revenue to a factor
+train$Revenue <- as.factor(train$Revenue)
+test$Revenue <- as.factor(test$Revenue)
+
+# train the rf model
+rf_model <- randomForest(Revenue ~ ., data = train, importance = TRUE)
+
+# extract feature importance
+feature_importance <- importance(rf_model)
+feature_importance_df <- data.frame(
+  Feature = rownames(feature_importance),
+  MeanDecreaseAccuracy = feature_importance[, "MeanDecreaseAccuracy"],
+  MeanDecreaseGini = feature_importance[, "MeanDecreaseGini"]
+)
+
+# plot feature importance
+barplot(
+  feature_importance[, "MeanDecreaseAccuracy"],
+  names.arg = rownames(feature_importance),
+  las = 2,
+  main = "Feature Importance (Mean Decrease Accuracy)",
+  col = "steelblue"
+)
+
+# Select important features based on MeanDecreaseAccuracy > 0
+important_features <- rownames(feature_importance)[feature_importance[, "MeanDecreaseAccuracy"] > 0]
+
+# Create a new dataset with only important features
+#reduced_df <- encoded_df[, c("Revenue", important_features)]
+```
+
+Page value has high important in classification
+
+## Balancing Classes
+
+### SMOTE
+
+```{r}
+library(smotefamily)
+
+# use data from  variable selection 
+smote_data <- SMOTE(
+  X = reduced_df[, -1],                     # Predictor variables
+  target = as.factor(reduced_df$Revenue),    # Target variable 
+  K = 5,                                    # Number of nearest neighbors
+  dup_size = 3                             # Oversampling multiplier
+)
+
+balanced_data <- smote_data$data
+
+# Convert class to a factor to ensure consistent handling
+balanced_data$class <- factor(balanced_data$class, levels = c("0", "1"))
+
+
+balanced_data$Revenue <- ifelse(balanced_data$class == 1, 1, 0)
+
+# remove class variable from smote and make revenue a factor again
+smote_df <- balanced_data %>%
+  mutate(Revenue = as.factor(Revenue)) %>%
+  dplyr::select(-class)
+
+head(smote_df)
+
+# more evenly split
+summary(smote_df$Revenue) # new
+summary(factor(reduced_df$Revenue)) # original
+```
+
+### Class weights - did not use
+
+```{r}
+table_revenue <- table(reduced_df$Revenue)
+class_weights <- 1 / table_revenue  # inverse of frequencies
+
+# normalize weights
+class_weights <- class_weights / sum(class_weights)
+
+# assign weights to each row based on its class
+weights <- ifelse(reduced_df$Revenue == 1, class_weights[2], class_weights[1])
+
+# add on to dd
+reduced_df$weights <- weights
+```
+
+```{r}
+# synthetic sample df
+head(smote_df)
+
+# original df
+head(reduced_df) # with weights
+
+# specify which to use
+full_df <- smote_df
+```
+
+## Logistic Regression
+
+#### Using SMOTE data
+
+```{r, warning=FALSE, message=FALSE}
+library(pROC)
+
+# baseline logistic regression model with default classification threshold
+set.seed(17) 
+
+# split in train and test sets (80-20)
+train_ind <- sample(1:nrow(full_df), size = 0.8*nrow(full_df), replace = FALSE)
+
+train_dat <- full_df[train_ind, ]
+test_dat <- full_df[-train_ind, ]
+
+# train the model with all predictors
+log_mod <- glm(Revenue ~ ., 
+                  data = train_dat, family = binomial(link = 'logit'))
+  
+# predict probabilities using the test data of this fold
+pred_probs <- predict(log_mod, newdata = test_dat, type = 'response')
+pred_class <- ifelse(pred_probs > 0.5, 1, 0)  # baseline threshold of 0.5
+  
+# calculate confusion matrix
+cont_table <- table(Predicted = factor(pred_class, levels = c(1, 0)),
+                    Actual = factor(test_dat$Revenue, levels = c(1, 0)))
+print(cont_table) 
+  
+# extract values from the confusion matrix
+TP <- cont_table[1,1]
+TN <- cont_table[2,2]
+FP <- cont_table[1,2]
+FN <- cont_table[2,1]
+
+# caclulate accuracy metrics
+roc <- roc(test_dat$Revenue, pred_probs)
+auc <- auc(roc)
+accuracy <- (TP + TN) / sum(cont_table)
+sensitivity <- TP / (TP + FN) # true pos (aka recall)
+specificity <- TN / (TN + FP) # true neg
+precision <- TP / (TP + FP) # prop of predicted positives that are actually positive
+f1 <- 2*((precision * sensitivity)/(precision + sensitivity))
+
+print(paste("accuracy:", round(accuracy, 4)))
+print(paste("sensitivity:", round(sensitivity, 4)))
+print(paste("specificity:", round(specificity, 4)))
+print(paste("precision:", round(precision, 4)))
+print(paste("f1 score:", round(f1, 4)))
+print(paste("AUC:", round(auc, 4)))
+```
+
+#### Using class weights - did not use
+
+```{r, message=FALSE, warning=FALSE}
+set.seed(17) 
+reduced_df$Revenue <- factor(reduced_df$Revenue)
+
+# split in train and test sets (80-20)
+train_ind <- sample(1:nrow(reduced_df), size = 0.8*nrow(reduced_df), replace = FALSE)
+
+train_dat <- reduced_df[train_ind, -30] # remove weights from the predictors
+test_dat <- reduced_df[-train_ind, -30]
+
+train_weights <- weights[train_ind]
+test_weights <- weights[-train_ind]
+
+# train the model with all predictors
+log_mod <- glm(Revenue ~ ., 
+                  data = train_dat, family = binomial(link = 'logit'), weights = train_weights) # added weights
+  
+# predict probabilities using the test data of this fold
+pred_probs <- predict(log_mod, newdata = test_dat, type = 'response')
+pred_class <- ifelse(pred_probs > 0.5, 1, 0)  # baseline threshold of 0.5
+  
+# calculate confusion matrix
+cont_table <- table(Predicted = factor(pred_class, levels = c(1, 0)),
+                    Actual = factor(test_dat$Revenue, levels = c(1, 0)))
+print(cont_table) 
+  
+# extract values from the confusion matrix
+TP <- cont_table[1,1]
+TN <- cont_table[2,2]
+FP <- cont_table[1,2]
+FN <- cont_table[2,1]
+
+# caclulate accuracy metrics
+roc <- roc(test_dat$Revenue, pred_probs)
+auc <- auc(roc)
+accuracy <- (TP + TN) / sum(cont_table)
+sensitivity <- TP / (TP + FN) # true pos (aka recall)
+specificity <- TN / (TN + FP) # true neg
+precision <- TP / (TP + FP) # prop of predicted positives that are actually positive
+f1 <- 2*((precision * sensitivity)/(precision + sensitivity))
+
+print(paste("accuracy:", round(accuracy, 4)))
+print(paste("sensitivity:", round(sensitivity, 4)))
+print(paste("specificity:", round(specificity, 4)))
+print(paste("precision:", round(precision, 4)))
+print(paste("f1 score:", round(f1, 4)))
+print(paste("AUC:", round(auc, 4)))
+```
+
+#### Optimize classification threshold (using SMOTE data)
+
+```{r, message=FALSE, warning=FALSE}
+# Initialize
+set.seed(17)  
+total_folds = 5
+thresholds = seq(0, 1, by = 0.01)
+
+# to store all metrics in a single data frame
+metrics_df = data.frame(matrix(ncol = length(thresholds), nrow = total_folds))
+colnames(metrics_df) = paste0("Threshold_", thresholds)
+
+# to store individual metric columns
+f1_df = metrics_df
+sens_df = metrics_df
+spec_df = metrics_df
+prec_df = metrics_df
+acc_df = metrics_df
+
+# create folds
+data_shuffled = full_df[sample(nrow(full_df)), ]
+folds = cut(seq(1, nrow(data_shuffled)), breaks = total_folds, labels = FALSE)
+
+# Define a function to calculate metrics for each threshold
+# takes predicted probabilities from a model, actual values from test data, and a threshold to classify
+# returns a vector of metrics calculated for that specific threshold
+calculate_metrics <- function(pred_val, true_values, threshold) {
+  pred_class = ifelse(pred_val > threshold, 1, 0) 
+  table = table(factor(pred_class, levels = c(1, 0)), factor(true_values, levels = c(1, 0)))  # Confusion matrix
+  
+  TP = table[1, 1]
+  FP = table[1, 2]
+  FN = table[2, 1]
+  TN = table[2, 2]
+  
+  sensitivity = ifelse((TP + FN) > 0, TP / (TP + FN), 0)
+  specificity = ifelse((TN + FP) > 0, TN / (TN + FP), 0)
+  precision = ifelse((TP + FP) > 0, TP / (TP + FP), 0)
+  accuracy = (TP + TN) / (TP + TN + FP + FN)
+  f1_score = ifelse((precision + sensitivity) > 0, 
+                    2 * (precision * sensitivity) / (precision + sensitivity), 0)
+  
+  return(c(f1_score, sensitivity, precision, specificity, accuracy))  # Return all metrics
+}
+
+# Loop over each fold for cross-validation
+for (fold in 1:total_folds) {
+  
+  # split into train and test for the current fold
+  testIndexes = which(folds == fold, arr.ind = TRUE)
+  testData = data_shuffled[testIndexes, ]
+  trainData = data_shuffled[-testIndexes, ]
+  
+  trained_mod <- glm(Revenue ~ ., 
+                  data = trainData, family = binomial(link = 'logit'))
+  
+  # predicted probabilities
+  pred_val = predict(trained_mod, newdata = testData, type = "response")
+  
+  # use function to calculate metrics for each threshold and store them in the appropriate columns
+  for (i in 1:length(thresholds)) {
+    metrics = calculate_metrics(pred_val, testData$Revenue, thresholds[i]) # reference our function
+    
+    f1_df[fold, i] = metrics[1]
+    sens_df[fold, i] = metrics[2]
+    prec_df[fold, i] = metrics[3]
+    spec_df[fold, i] = metrics[4]
+    acc_df[fold, i] = metrics[5]
+  }
+}
+
+# average each metric across folds
+f1_means = colMeans(f1_df)
+sens_means = colMeans(sens_df)
+prec_means = colMeans(prec_df)
+spec_means = colMeans(spec_df)
+acc_means = colMeans(acc_df)
+
+opt_threshold_f1 = thresholds[which.max(f1_means)] # which threshold maximizes F1 score
+opt_threshold_acc = thresholds[which.max(acc_means)] # which threshold maximizes accuracy
+
+opt_threshold_f1; opt_threshold_acc
+```
+
+#### Thresholds Plot
+
+```{r,  warning=FALSE, message=FALSE, fig.width=12, fig.height=6}
+### plot metrics across thresholds
+library(ggplot2)
+library(gghighlight)
+
+opt_threshold <- opt_threshold_acc
+
+# Combine averaged values into a data frame
+threshold_data <- data.frame(threshold = thresholds,
+                      sensitivity = sens_means,
+                      specificity = spec_means,
+                      accuracy = acc_means)
+
+# Create a long-format data frame for plotting
+threshold_data_long <- threshold_data %>%
+  gather(key = "Metric", value = "Score", -threshold) 
+
+# Plot thresholds vs scores for each metric
+thresholds <- ggplot(threshold_data_long, aes(x = threshold, y = Score, color = Metric)) +
+  geom_line(size = 2, linetype="dotted") +  
+  gghighlight(Metric == 'accuracy',
+              use_direct_label = FALSE,
+              unhighlighted_params = list(colour = NULL, alpha = 0.6, 
+                                          linewidth = 1, linetype="solid"))  + 
+  geom_vline(xintercept = opt_threshold, 
+             linetype = "dashed", color = "black", linewidth = 0.5) + 
+  annotate("text", x = opt_threshold, y = 0.30, 
+           label = "Optimal Threshold = 0.37", color = "black", size = 5.5, 
+           hjust = -0.05, vjust = -0.5) +
+  labs(title = "Model Accuracy Across Classification Thresholds",
+       x = "Threshold",
+       y = "Score") +
+  scale_color_manual(values = c("deepskyblue3", "magenta4", "darkorange1"),
+                     labels = c("Accuracy","Sensitivity", "Specificity")) + 
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5, size = 24), 
+        axis.title = element_text(size = 18),   
+        axis.text = element_text(size = 18),
+        legend.text = element_text(size = 22),
+        legend.title = element_blank()) 
+
+ggsave("thresholds.png", plot = last_plot(), width = 12, height = 6)
+thresholds
+```
+
+## Random Forest Model
+
+```{r}
+library(pROC)
+set.seed(17) 
+
+# split in train and test sets (80-20)
+train_ind <- sample(1:nrow(full_df), size = 0.8*nrow(full_df), replace = FALSE)
+
+train_dat <- full_df[train_ind, ]
+test_dat <- full_df[-train_ind, ]
+
+# Build the random forest model (using 500 trees and mtry as sqrt(# features) for simplicity)
+rf_mod <- randomForest(Revenue ~ ., data = trainData, 
+                         ntree = 500, mtry = sqrt(ncol(trainData) - 1))
+
+# predict probabilities using the test data of this fold
+pred_probs <- predict(rf_mod, newdata = test_dat, type = 'prob')[,2]
+pred_class <- ifelse(pred_probs > 0.5, 1, 0)  # baseline threshold of 0.5
+  
+# calculate confusion matrix
+cont_table <- table(Predicted = factor(pred_class, levels = c(1, 0)),
+                    Actual = factor(test_dat$Revenue, levels = c(1, 0)))
+print(cont_table) 
+  
+# extract values from the confusion matrix
+TP <- cont_table[1,1]
+TN <- cont_table[2,2]
+FP <- cont_table[1,2]
+FN <- cont_table[2,1]
+
+# caclulate accuracy metrics
+roc <- roc(test_dat$Revenue, pred_probs)
+auc <- auc(roc)
+accuracy <- (TP + TN) / sum(cont_table)
+sensitivity <- TP / (TP + FN) # true pos (aka recall)
+specificity <- TN / (TN + FP) # true neg
+precision <- TP / (TP + FP) # prop of predicted positives that are actually positive
+f1 <- 2*((precision * sensitivity)/(precision + sensitivity))
+
+print(paste("accuracy:", round(accuracy, 4)))
+print(paste("sensitivity:", round(sensitivity, 4)))
+print(paste("specificity:", round(specificity, 4)))
+print(paste("precision:", round(precision, 4)))
+print(paste("f1 score:", round(f1, 4)))
+print(paste("AUC:", round(auc, 4)))
+```
+
+#### Optimize classification threshold
+
+(Same code as logistic regression threshold optimization but with RF model)
+
+```{r}
+# Initialize
+set.seed(17)  
+total_folds = 5
+thresholds = seq(0, 1, by = 0.01)
+
+# to store all metrics in a single data frame
+metrics_df = data.frame(matrix(ncol = length(thresholds), nrow = total_folds))
+colnames(metrics_df) = paste0("Threshold_", thresholds)
+
+# to store individual metric columns
+f1_df = metrics_df
+sens_df = metrics_df
+spec_df = metrics_df
+prec_df = metrics_df
+acc_df = metrics_df
+
+# create folds
+data_shuffled = full_df[sample(nrow(full_df)), ]
+folds = cut(seq(1, nrow(data_shuffled)), breaks = total_folds, labels = FALSE)
+
+# Define a function to calculate metrics for each threshold
+# takes predicted probabilities from a model, actual values from test data, and a threshold to classify
+# returns a vector of metrics calculated for that specific threshold
+calculate_metrics <- function(pred_val, true_values, threshold) {
+  pred_class = ifelse(pred_val > threshold, 1, 0) 
+  table = table(factor(pred_class, levels = c(1, 0)), 
+                factor(true_values, levels = c(1, 0)))  # Confusion matrix
+  
+  TP = table[1, 1]
+  FP = table[1, 2]
+  FN = table[2, 1]
+  TN = table[2, 2]
+  
+  sensitivity = ifelse((TP + FN) > 0, TP / (TP + FN), 0)
+  specificity = ifelse((TN + FP) > 0, TN / (TN + FP), 0)
+  precision = ifelse((TP + FP) > 0, TP / (TP + FP), 0)
+  accuracy = (TP + TN) / (TP + TN + FP + FN)
+  f1_score = ifelse((precision + sensitivity) > 0, 
+                    2 * (precision * sensitivity) / (precision + sensitivity), 0)
+  
+  return(c(f1_score, sensitivity, precision, specificity, accuracy))  # Return all metrics
+}
+
+# Loop over each fold for cross-validation
+for (fold in 1:total_folds) {
+  
+  # split into train and test for the current fold
+  testIndexes = which(folds == fold, arr.ind = TRUE)
+  testData = data_shuffled[testIndexes, ]
+  trainData = data_shuffled[-testIndexes, ]
+  
+  # Build the random forest model
+  rf_mod <- randomForest(Revenue ~ ., data = trainData, 
+                         ntree = 500, mtry = sqrt(ncol(trainData) - 1)) # sqrt of # features
+  
+  
+  # predicted probabilities
+  pred_val = predict(rf_mod, newdata = testData, type = "prob")[,2]
+  
+  # use function to calculate metrics for each threshold and store them in the appropriate columns
+  for (i in 1:length(thresholds)) {
+    metrics = calculate_metrics(pred_val, testData$Revenue, thresholds[i]) # reference our function
+    
+    f1_df[fold, i] = metrics[1]
+    sens_df[fold, i] = metrics[2]
+    prec_df[fold, i] = metrics[3]
+    spec_df[fold, i] = metrics[4]
+    acc_df[fold, i] = metrics[5]
+  }
+}
+
+# average each metric across folds
+f1_means = colMeans(f1_df)
+sens_means = colMeans(sens_df)
+prec_means = colMeans(prec_df)
+spec_means = colMeans(spec_df)
+acc_means = colMeans(acc_df)
+
+opt_threshold_f1 = thresholds[which.max(f1_means)] # which threshold maximizes F1 score
+opt_threshold_acc = thresholds[which.max(acc_means)] # which threshold maximizes accuracy
+
+# using accuracy since response is balanced
+opt_threshold_f1; opt_threshold_acc
+```
+
+## Final Random Forest Model
+
+```{r}
+library(randomForest)
+library(pROC) 
+set.seed(17)
+
+k = 5
+n = dim(full_df)[1] # total online sessions
+inds = sample(rep(1:k, length=n)) # radnomly assign each instance to a different fold
+
+# initialize vectors to store performance metrics
+auc_vec_rf <- numeric(k)
+accuracy_vec_rf <- numeric(k)
+sensitivity_vec_rf <- numeric(k)
+specificity_vec_rf <- numeric(k)
+precision_vec_rf <- numeric(k)
+f1_vec_rf <- numeric(k)
+matrix_sum_rf <- matrix(0, ncol = 2, nrow = 2)
+
+# k-fold cross validation
+for (i in 1:k) {
+  cat(paste("Fold", i, "... "))
+  
+  train_dat <- full_df[inds != i, ]  # Train data
+  test_dat <- full_df[inds == i, ]  # Test data
+
+  # Build the random forest model
+  rf_mod <- randomForest(Revenue ~ ., data = train_dat, 
+                         ntree = 500, mtry = sqrt(ncol(train_dat) - 1)) # -1 to account for response variable
+  
+  # predict probabilities and classes
+  pred_probs_rf <- predict(rf_mod, newdata = test_dat, type = 'prob')[, 2]
+  pred_class_rf <- ifelse(pred_probs_rf > 0.43, 1, 0)
+  
+  # confusion matrix
+  cont_table_rf <- table(Predicted = factor(pred_class_rf, levels = c(1, 0)),
+                         Actual = factor(test_dat$Revenue, levels = c(1, 0)))
+  print(cont_table_rf)  # Display 2x2 table
+  
+  # true/false pos/neg
+  TP_rf <- cont_table_rf[1, 1]
+  TN_rf <- cont_table_rf[2, 2]
+  FP_rf <- cont_table_rf[1, 2]
+  FN_rf <- cont_table_rf[2, 1]
+  
+  # performance metrics
+  roc_rf <- roc(test_dat$Revenue, pred_probs_rf)
+  auc_rf <- auc(roc_rf)
+  accuracy_rf <- (TP_rf + TN_rf) / sum(cont_table_rf)
+  sensitivity_rf <- TP_rf / (TP_rf + FN_rf)
+  specificity_rf <- TN_rf / (TN_rf + FP_rf)
+  precision_rf <- TP_rf / (TP_rf + FP_rf)
+  f1_rf <- 2 * ((precision_rf * sensitivity_rf) / (precision_rf + sensitivity_rf))
+  
+  # append metrics for this fold
+  auc_vec_rf[i] <- auc_rf
+  accuracy_vec_rf[i] <- accuracy_rf
+  sensitivity_vec_rf[i] <- sensitivity_rf
+  specificity_vec_rf[i] <- specificity_rf
+  precision_vec_rf[i] <- precision_rf
+  f1_vec_rf[i] <- f1_rf
+  matrix_sum_rf <- matrix_sum_rf + cont_table_rf
+  
+  plot(roc_rf, 
+     col = "forestgreen", 
+     lwd = 2, 
+     main = paste("Random Forest ROC Curve, Fold", i), 
+     xlab = "False Positive Rate", 
+     ylab = "True Positive Rate", 
+     legacy.axes = TRUE, 
+     print.auc = TRUE, 
+     grid = c(0.1, 0.2),   
+     cex.main = 1.5,     # Increase title size
+     cex.lab = 1.2,      # Increase axis label size
+     cex.axis = 1.1)
+}
+
+# average metrics across folds
+mean_auc_rf <- mean(auc_vec_rf)
+mean_accuracy_rf <- mean(accuracy_vec_rf)
+mean_sensitivity_rf <- mean(sensitivity_vec_rf)
+mean_specificity_rf <- mean(specificity_vec_rf)
+mean_precision_rf <- mean(precision_vec_rf)
+mean_f1_rf <- mean(f1_vec_rf)
+mean_mat_rf <- matrix_sum_rf / k
+
+# Print results
+print(paste("mean AUC (RF):", round(mean_auc_rf, 4)))
+print(paste("mean accuracy (RF):", round(mean_accuracy_rf, 4)))
+print(paste("mean sensitivity (RF):", round(mean_sensitivity_rf, 4)))
+print(paste("mean specificity (RF):", round(mean_specificity_rf, 4)))
+print(paste("mean precision (RF):", round(mean_precision_rf, 4)))
+print(paste("mean f1 score (RF):", round(mean_f1_rf, 4)))
+print(paste("mean confusion matrix (RF):")); mean_mat_rf
+print(paste("total confusion matrix (RF):")); matrix_sum_rf
+```
+
+## Final Logistic Regression Model
+
+```{r}
+# randomly split data into 5 folds
+set.seed(17) 
+
+k = 5
+n = dim(full_df)[1] # total online sessions
+inds = sample(rep(1:k, length=n)) # radnomly assign each instance to a different fold
+
+### run cross-validation
+
+# initialize vectors to store accuracy values
+roc_vec <- numeric(k)
+auc_vec <- numeric(k)
+accuracy_vec <- numeric(k)
+sensitivity_vec <- numeric(k)
+specificity_vec <- numeric(k)
+precision_vec <- numeric(k)
+f1_vec <- numeric(k)
+matrix_sum <- matrix(0, ncol=2, nrow=2)
+
+# for each fold (1-5)
+for (i in 1:k) {
+  cat(paste("Fold",i,"... "))
+  
+  train_dat = full_df[inds!=i,] # train data
+  test_dat = full_df[inds==i,] # test data 
+  
+  # build the model with training data (all predictors)
+  log_mod <- glm(Revenue ~ ., 
+                  data = train_dat, family = binomial(link = 'logit'))
+  
+  # predict probabilities using the test data of this fold
+  pred_probs <- predict(log_mod, newdata = test_dat, type = 'response')
+  pred_class <- ifelse(pred_probs > 0.39, 1, 0) 
+  
+  # calculate confusion matrix for the fold
+  cont_table <- table(Predicted = factor(pred_class, levels = c(1, 0)),
+                      Actual = factor(test_dat$Revenue, levels = c(1, 0)))
+  print(cont_table) # display 2x2 table\
+  
+  # extract values from the confusion matrix
+  TP <- cont_table[1,1]
+  TN <- cont_table[2,2]
+  FP <- cont_table[1,2]
+  FN <- cont_table[2,1]
+
+  # caclulate performance metrics for this fold
+  roc <- roc(test_dat$Revenue, pred_probs)
+  auc <- auc(roc)
+  accuracy <- (TP + TN) / sum(cont_table)
+  sensitivity <- TP / (TP + FN) # true pos (aka recall)
+  specificity <- TN / (TN + FP) # true neg
+  precision <- TP / (TP + FP) # prop of predicted positives that are actually positive
+  f1 <- 2*((precision * sensitivity)/(precision + sensitivity))
+
+  # append to vectors storing metrics for all folds
+  roc_vec[i] <- roc
+  auc_vec[i] <- auc
+  accuracy_vec[i] <- accuracy
+  sensitivity_vec[i] <- sensitivity
+  specificity_vec[i] <- specificity
+  precision_vec[i] <- precision
+  f1_vec[i] <- f1
+  matrix_sum <- matrix_sum + cont_table
+  
+  plot(roc, 
+     col = "dodgerblue", 
+     lwd = 2, 
+     main = paste("Logistic Regression ROC Curve, Fold", i), 
+     xlab = "False Positive Rate", 
+     ylab = "True Positive Rate", 
+     legacy.axes = TRUE, 
+     print.auc = TRUE, 
+     grid = c(0.1, 0.2),   
+     cex.main = 1.5,     # Increase title size
+     cex.lab = 1.2,      # Increase axis label size
+     cex.axis = 1.1) 
+}
+
+# mean across all folds
+mean_auc <- mean(auc_vec)
+mean_accuracy <- mean(accuracy_vec)
+mean_sensitivity <- mean(sensitivity_vec)
+mean_specificity <- mean(specificity_vec)
+mean_precision <- mean(precision_vec)
+mean_f1 <- mean(f1_vec)
+mean_mat <- matrix_sum / k
+
+print(paste("mean AUC:", round(mean_auc, 4)))
+print(paste("mean accuracy:", round(mean_accuracy, 4)))
+print(paste("mean sensitivity:", round(mean_sensitivity, 4)))
+print(paste("mean specificity:", round(mean_specificity, 4)))
+print(paste("mean precision:", round(mean_precision, 4)))
+print(paste("mean f1 score:", round(mean_f1, 4)))
+print(paste("mean confusion matrix:")); mean_mat
+print(paste("total confusion matrix:")); matrix_sum
+```
+
+### Model Coefficients
+
+```{r}
+set.seed(17) 
+
+# split in train and test sets (80-20)
+train_ind <- sample(1:nrow(full_df), size = 0.8*nrow(full_df), replace = FALSE)
+
+train_dat <- full_df[train_ind, ]
+test_dat <- full_df[-train_ind, ]
+
+# train the model with all predictors
+final_log_mod <- glm(Revenue ~ ., 
+                  data = train_dat, family = binomial(link = 'logit'))
+  
+# predict probabilities using the test data of this fold
+pred_probs <- predict(final_log_mod, newdata = test_dat, type = 'response')
+pred_class <- ifelse(pred_probs > 0.39, 1, 0)  
+  
+# calculate confusion matrix
+cont_table <- table(Predicted = factor(pred_class, levels = c(1, 0)),
+                    Actual = factor(test_dat$Revenue, levels = c(1, 0)))
+print(cont_table) 
+
+# model coeffs (log-odds)
+summary(final_log_mod)[]
+
+
+# odds ratios
+data.frame(exp(coef(final_log_mod)))
+```
+
+### Combine ROC plots
+
+```{r, warning=FALSE, message=FALSE}
+library(randomForest)
+library(pROC) 
+set.seed(17)
+
+# combine plots for just one fold
+i = 1
+train_dat <- full_df[inds != i, ]  # Train data
+test_dat <- full_df[inds == i, ]  # Test data
+
+# Build the random forest model
+rf_mod <- randomForest(Revenue ~ ., data = train_dat, 
+                       ntree = 500, mtry = sqrt(ncol(train_dat) - 1))  # -1 to account for response variable
+
+# predict probabilities for random forest
+pred_probs_rf <- predict(rf_mod, newdata = test_dat, type = 'prob')[, 2]
+roc_rf <- roc(test_dat$Revenue, pred_probs_rf)
+
+# Build the logistic regression model
+log_mod <- glm(Revenue ~ ., data = train_dat, family = binomial(link = 'logit'))
+pred_probs_log <- predict(log_mod, newdata = test_dat, type = 'response')
+roc_log <- roc(test_dat$Revenue, pred_probs_log)
+
+# Initialize a plot window for a single fold
+plot(roc_rf, col = "forestgreen", lwd = 2, 
+     main = "ROC Curves: Random Forest vs Logistic Regression", 
+     xlab = "False Positive Rate", 
+     ylab = "True Positive Rate", 
+     legacy.axes = TRUE,
+     grid = c(0.1, 0.2), 
+     cex.main = 1.4, cex.lab = 1.1, cex.axis = 1.1)
+
+# Overlay the logistic regression ROC curve
+lines(roc_log$specificities, roc_log$sensitivities, col = "dodgerblue", lwd = 2)
+
+# Add a legend to distinguish between the models
+legend("bottomright", legend = c("Random Forest", "Logistic Regression"), 
+       col = c("forestgreen", "dodgerblue"), lwd = 2, cex = 1.2)
+
+text(0, .7, 
+     labels = "AUC = 0.975", 
+     col = "forestgreen", 
+     cex = 1.3)
+text(0, .6, 
+     labels = "AUC = 0.905", 
+     col = "dodgerblue", 
+     cex = 1.3)
+
+```
